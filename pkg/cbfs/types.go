@@ -218,7 +218,7 @@ type FSPRecord struct {
 	File
 }
 
-type PayloadHeader struct {
+type PayloadSELFHeader struct {
 	Type        SegmentType
 	Compression Compression
 	Offset      uint32
@@ -227,10 +227,15 @@ type PayloadHeader struct {
 	MemSize     uint32
 }
 
+type PayloadSELFRecord struct {
+	File
+	Segs []PayloadSELFHeader
+	Data []byte
+}
+
 type PayloadRecord struct {
 	File
-	Segs []PayloadHeader
-	Data []byte
+	Self PayloadSELFRecord
 }
 
 // fix this mess later to use characters, not constants.
@@ -261,6 +266,15 @@ func (s SegmentType) String() string {
 	}
 	return "unknown"
 }
+
+type PayloadType int
+
+const (
+	PayloadELF                PayloadType = 0
+	PayloadBzImage                        = 1
+	PayloadFlattenedImageTree             = 2
+	PayloadFlatBinary                     = 3
+)
 
 type OptionRom struct {
 	File

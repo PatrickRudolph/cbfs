@@ -1,0 +1,71 @@
+package cbfs
+
+import (
+	"fmt"
+	"io"
+)
+
+func NewPayloadSelfRecord(f *File) (ReadWriter, error) {
+	p := &PayloadSELFRecord{File: *f}
+	return p, nil
+}
+
+func (p *PayloadSELFRecord) Read(in io.ReadSeeker) error {
+	for {
+		var h PayloadSELFHeader
+		if err := Read(in, &h); err != nil {
+			Debug("PayloadSELFHeader read: %v", err)
+			return err
+		}
+		Debug("Got PayloadSELFHeader %s", h.String())
+		p.Segs = append(p.Segs, h)
+		if h.Type == SegEntry {
+			break
+		}
+	}
+	where, err := in.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return fmt.Errorf("Finding location in stream: %v", err)
+	}
+	amt := uint32(where) - p.Size
+	if amt == 0 {
+		return nil
+	}
+	p.FData = make([]byte, amt)
+	n, err := in.Read(p.FData)
+	if err != nil {
+		return err
+	}
+	Debug("Payload read %d bytes", n)
+	return nil
+}
+
+func (h *PayloadSELFRecord) String() string {
+	s := recString(h.File.Name, h.RecordStart, h.Type.String(), h.Size, "none")
+	for i, seg := range h.Segs {
+		s += "\n"
+		s += recString(fmt.Sprintf(" Seg #%d", i), seg.Offset, seg.Type.String(), seg.Size, seg.Compression.String())
+	}
+	return s
+}
+
+func (r *PayloadSELFHeader) String() string {
+	return fmt.Sprintf("Type %#x Compression %#x Offset %#x LoadAddress %#x Size %#x MemSize %#x",
+		r.Type,
+		r.Compression,
+		r.Offset,
+		r.LoadAddress,
+		r.Size,
+		r.MemSize)
+}
+
+func (r *PayloadSELFRecord) Write(w io.Writer) error {
+	if err := WriteLE(w, r.Segs); err != nil {
+		return err
+	}
+	return Write(w, r.FData)
+}
+
+func (r *PayloadSELFRecord) Header() *File {
+	return &r.File
+}
