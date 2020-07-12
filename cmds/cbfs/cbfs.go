@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/linuxboot/cbfs/pkg/cbfs"
+	"github.com/PatrickRudolph/cbfs/pkg/cbfs"
 	flag "github.com/spf13/pflag"
 )
 
