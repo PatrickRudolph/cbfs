@@ -1,122 +1,107 @@
-# Check https://circleci.com/docs/2.0/language-go/ for more details
 version: 2
+jobs:
+  build:
+    docker:
+      # specify the version
+      - image: circleci/golang:1.13
+
+    working_directory: /go/src/github.com/9elements/txt-suite
+    steps:
+      - checkout
+      - run: sudo apt install -y golint
+      # specify any bash command here prefixed with `run: `
+      - run: if [ "$(gofmt -l .)" != "" ]; then exit 1; fi
+      - run: golint -set_exit_status ./pkg/test
+      - run: golint -set_exit_status ./pkg/tools
+      - run: golint -set_exit_status ./pkg/hwapi
+      - run: golint -set_exit_status ./cmd/txt-suite
+      - run: go mod download
+      - run: go mod verify
+      - run: go build -o txt-suite cmd/txt-suite/*.go
+      - run: go test ./pkg/hwapi/
+      - run: go test ./pkg/tools/
+      - run: go test ./pkg/test/
+      - run: mkdir out
+      - run: git config user.email "circleci@circleci.com"
+      - run: git config user.name "CI"
+      - run: ./txt-suite -m > TESTPLAN.md
+      - run: git add TESTPLAN.md
+      - run: git commit -m "Update testplan file" && git push --set-upstream origin ${CIRCLE_BRANCH}
+      - run: cp txt-suite out/
+
+      - persist_to_workspace:
+          root: out
+          paths:
+            - txt-suite
+  create_deb_rpm:
+    docker:
+      # specify the version
+      - image: circleci/golang:1.13
+
+    working_directory: /go/src/github.com/9elements/txt-suite
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /tmp/out
+      - run: go get github.com/goreleaser/nfpm/cmd/nfpm@v1.3.2
+      - run: go build github.com/goreleaser/nfpm/cmd/nfpm
+      - run: cp /tmp/out/txt-suite .
+      - run: if [ -z "$CIRCLE_TAG" ]; then echo "export CIRCLE_TAG=$(git describe --tags|cut -d'-' -f1);" >> $BASH_ENV; fi
+      - run: if [ -z "$CIRCLE_BUILD_NUM" ]; then echo "export CIRCLE_BUILD_NUM=$(git describe --tags|cut -d'-' -f2);" >> $BASH_ENV; fi
+      - run: MY_APP_VERSION=${CIRCLE_TAG} MY_APP_BUILDNUMBER=${CIRCLE_BUILD_NUM} go run github.com/goreleaser/nfpm/cmd/nfpm pkg --config nfpm_rpm.yaml --target golang-txt-suite-${CIRCLE_TAG}-${CIRCLE_BUILD_NUM}.x86_64.rpm
+      - run: MY_APP_VERSION=${CIRCLE_TAG} MY_APP_BUILDNUMBER=${CIRCLE_BUILD_NUM} go run github.com/goreleaser/nfpm/cmd/nfpm pkg --config nfpm_deb.yaml --target go_txt-suite-${CIRCLE_TAG}-${CIRCLE_BUILD_NUM}_amd64.deb
+      - run: mkdir -p out && cp *.rpm ./out/ && cp *.deb ./out/
+      - run: cp txt-suite ./out/
+      - run: cp golang-txt-suite-${CIRCLE_TAG}-${CIRCLE_BUILD_NUM}.x86_64.rpm artifact.rpm
+      - run: cp go_txt-suite-${CIRCLE_TAG}-${CIRCLE_BUILD_NUM}_amd64.deb artifact.deb
+      - persist_to_workspace:
+          root: out
+          paths:
+            - golang-txt-suite*.rpm
+            - go_txt-suite*.deb
+            - txt-suite
+      - store_artifacts:
+          path: artifact.rpm
+          destination: golang-txt-suite.rpm
+      - store_artifacts:
+          path: artifact.deb
+          destination: golang-txt-suite.deb
+
+  publish-github-release:
+    docker:
+      - image: cibuilds/github:0.10
+    steps:
+      - checkout
+
+      - attach_workspace:
+          at: /tmp/out
+      - run:
+          name: "Publish Release on GitHub"
+          command: |
+            ghr -t ${GITHUB_TOKEN} -u ${CIRCLE_PROJECT_USERNAME} -r ${CIRCLE_PROJECT_REPONAME} -c ${CIRCLE_SHA1} -delete 1.0 /tmp/out/txt-suite /tmp/out/*.deb /tmp/out/*.rpm
+
 workflows:
   version: 2
-  build_and_test:
+  main:
     jobs:
-      - clean-code
-      - test:
+      - build:
+          filters:
+            branches:
+              only: /.*/
+            tags:
+              only: /.*/
+      - create_deb_rpm:
           requires:
-            - clean-code
-      - race:
+            - build
+      - publish-github-release:
           requires:
-            - clean-code
-      - coverage:
-          requires:
-            - clean-code
-      - check_licenses:
-          requires:
-            - clean-code
-jobs:
-  clean-code:
-    docker:
-      - image: circleci/golang:1.11
-    working_directory: /go/src/github.com/linuxboot/cbfs
-    steps:
-      - checkout
-      - run:
-          name: Install dep
-          command: |
-            wget https://github.com/golang/dep/releases/download/v0.5.0/dep-linux-amd64
-            mv dep-linux-amd64 dep
-            chmod +x dep
-      - run:
-          name: Install golint
-          command: go get -u golang.org/x/lint/golint
-      - run:
-          name: Install ineffassign
-          command: go get github.com/gordonklaus/ineffassign
-      - run:
-          name: Check vendored dependencies
-          command: |
-            ./dep status
-            ./dep ensure -vendor-only
-            git status vendor
-            if [[ -n "$(git status --porcelain vendor)" ]]; then
-              echo 'vendor/ is out-of-date: run `dep ensure -vendor-only` and then check in the changes'
-              git status --porcelain vendor
-              exit 1
-            fi
-      - run:
-          name: vet
-          command: |
-            go tool vet cmds pkg
-      - run:
-          name: gofmt
-          command: test -z $(gofmt -s -l cmds pkg)
-      - run:
-          name: golint
-          command: golint --set_exit_status $(go list ./... | grep -v /vendor/)
-      - run:
-          name: ineffassign
-          command: ineffassign .
-  test:
-    docker:
-      - image: circleci/golang:1.11
-    working_directory: /go/src/github.com/linuxboot/cbfs
-    environment:
-      - CGO_ENABLED: 0
-    steps:
-      - checkout
-      - run:
-          name: Test all
-          command: go test -a -ldflags '-s' ./...
-      - run:
-          name: Test coverage
-          command: go test -cover ./...
-  race:
-    docker:
-      - image: circleci/golang:1.11
-    working_directory: /go/src/github.com/linuxboot/cbfs
-    environment:
-      - CGO_ENABLED: 1
-    steps:
-      - checkout
-      - run:
-          name: Race detector
-          command: go test -race ./...
-  coverage:
-    docker:
-      - image: circleci/golang:1.11
-    working_directory: /go/src/github.com/linuxboot/cbfs
-    environment:
-      - CGO_ENABLED: 0
-    steps:
-      - checkout
-      - run:
-          name: Test Coverage
-          command: |
-            set -e
-            > coverage.txt
-            for d in $(go list ./... | grep -v vendor); do
-                go test -coverprofile=profile.out -covermode=atomic $d
-                if [ -f profile.out ]; then
-                    cat profile.out >> coverage.txt
-                    rm profile.out
-                fi
-            done
-      - run:
-          name: Report Coverage
-          when: on_success
-          command: bash <(curl -s https://codecov.io/bash)
-  check_licenses:
-    docker:
-      - image: circleci/golang:1.11
-    working_directory: /go/src/github.com/linuxboot/cbfs
-    environment:
-      - CGO_ENABLED: 0
-    steps:
-      - checkout
-      - run:
-          name: Check licenses
-          command: go run scripts/checklicenses/checklicenses.go
+            - build
+            - create_deb_rpm
+          filters:
+            tags:
+              # vX.Y.Z
+              only: /^v\d+\.\d+\.\d+$/
+            branches:
+              ignore: /.*/
+                                                                                                                                                                                                                                                     110,7        Ende
+
